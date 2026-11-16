@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""Offline preflight for chat-demo (deepseek-ai/chat-demo) history archives.
+
+Validates the documented export container (v3) BEFORE an import replaces all
+local conversations: ZIP container rules, manifest, session/index consistency,
+message-tree invariants and image reference closure.
+
+Exit codes: 0 = no errors, 1 = findings (errors), 2 = usage/input error.
+Zero third-party dependencies; stdlib only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import sys
+import unicodedata
+import zipfile
+from pathlib import Path
+
+TOOL = "chat-demo-archive-preflight"
+VERSION = "1.0.0"
+EXPORT_VERSION = 3
+TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
+SESSION_RE = re.compile(r"^chat_sessions/([^/]+)\.json$")
+IMAGE_RE = re.compile(r"^chat_sessions/([^/]+)_files/(.+)$")
+ROLES = {"USER", "ASSISTANT"}
+STATUSES = {
+    "WIP",
+    "FINISHED",
+    "CONTENT_FILTER",
+    "FAILED",
+    "INCOMPLETE",
+    "CONTEXT_LENGTH_EXCEEDED",
+    "TIMEOUT",
+}
+
+
+class Finding:
+    def __init__(self, code: str, severity: str, path: str, detail: str) -> None:
+        self.code = code
+        self.severity = severity
+        self.path = path
+        self.detail = detail
+
+    def as_dict(self) -> dict:
+        return {
+            "code": self.code,
+            "severity": self.severity,
+            "path": self.path,
+            "detail": self.detail,
+        }
+
+
+def add(findings: list[Finding], code: str, path: str, detail: str) -> None:
+    findings.append(Finding(code, "error" if code.startswith("E") else "warning", path, detail))
+
+
+def is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def is_str(value) -> bool:
+    return isinstance(value, str)
+
+
+def check_time(value) -> bool:
+    return is_str(value) and TIME_RE.match(value) is not None
+
+
+def safe_zip_entries(archive: Path, findings: list[Finding]):
+    try:
+        zf = zipfile.ZipFile(archive)
+    except (zipfile.BadZipFile, OSError) as exc:
+        return None, f"cannot open ZIP: {exc}"
+    raw = archive.read_bytes()
+    if b"PK\x06\x06" in raw or b"PK\x06\x07" in raw:
+        add(findings, "E004", "manifest.json", "ZIP64 signature present; chat-demo supports single-volume ZIP32 only")
+    infos = [i for i in zf.infolist() if not i.is_dir()]
+    names = [i.filename for i in infos]
+    if names and names[0] != "manifest.json":
+        add(findings, "E002", names[0], "manifest.json must be the first archive entry")
+    seen: dict[str, str] = {}
+    for info in infos:
+        name = info.filename
+        if info.flag_bits & 0x1:
+            add(findings, "E005", name, "encrypted entry; chat-demo rejects encrypted archives")
+        if getattr(info, "volume", 0):
+            add(findings, "E006", name, "multi-volume archive; chat-demo supports single-volume only")
+        non_ascii = any(ord(ch) > 127 for ch in name)
+        if non_ascii and not (info.flag_bits & 0x800):
+            add(findings, "E007", name, "non-ASCII name without UTF-8 flag")
+        nfc = unicodedata.normalize("NFC", name)
+        if nfc in seen:
+            add(findings, "E008", name, f"duplicate after NFC normalization of {seen[nfc]!r}")
+        else:
+            seen[nfc] = name
+        if name.startswith("/") or "\\" in name or ".." in name.split("/"):
+            add(findings, "E009", name, "unsafe path (absolute, backslash or '..' segment)")
+    bad = zf.testzip()
+    if bad is not None:
+        add(findings, "E013", bad, "CRC check failed")
+    return (zf, infos), None
+
+
+def load_json_entry(zf: zipfile.ZipFile, name: str):
+    try:
+        return json.loads(zf.read(name).decode("utf-8")), None
+    except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, str(exc)
+
+
+def check_session(sid: str, data, zf: zipfile.ZipFile, names: set[str], findings: list[Finding]):
+    path = f"chat_sessions/{sid}.json"
+    if not isinstance(data, dict):
+        add(findings, "E012", path, "session JSON is not an object")
+        return 0, []
+    if data.get("id") != sid:
+        add(findings, "E012", path, f"session id {data.get('id')!r} does not match filename")
+    messages = data.get("messages")
+    if not isinstance(messages, list):
+        add(findings, "E012", path, "messages is not an array")
+        return 0, []
+    if not is_int(data.get("current_message_id")):
+        add(findings, "E012", path, "current_message_id is not an integer")
+    ids: dict[int, dict] = {}
+    for msg in messages:
+        if not isinstance(msg, dict) or not is_int(msg.get("id")):
+            add(findings, "E013", path, "message without integer id")
+            continue
+        mid = msg["id"]
+        if mid in ids:
+            add(findings, "E013", f"{path}#{mid}", f"duplicate message id {mid}")
+        ids[mid] = msg
+        if msg.get("role") not in ROLES:
+            add(findings, "E013", f"{path}#{mid}", f"invalid role {msg.get('role')!r}")
+        if msg.get("status") not in STATUSES:
+            add(findings, "E013", f"{path}#{mid}", f"invalid status {msg.get('status')!r}")
+        if not isinstance(msg.get("fragments"), list):
+            add(findings, "E013", f"{path}#{mid}", "fragments is not an array")
+    roots = [m for m in ids.values() if m.get("parent_id") is None]
+    if len(roots) != 1:
+        add(findings, "E013", path, f"expected exactly one root message, found {len(roots)}")
+    elif roots[0].get("role") != "USER":
+        add(findings, "E013", path, "root message must have role USER")
+    for mid, msg in ids.items():
+        parent = msg.get("parent_id")
+        if parent is None:
+            continue
+        if not is_int(parent):
+            add(findings, "E013", f"{path}#{mid}", "parent_id is not an integer or null")
+            continue
+        if parent >= mid:
+            add(findings, "E013", f"{path}#{mid}", f"parent_id {parent} is not smaller than id {mid}")
+        if parent not in ids:
+            add(findings, "E013", f"{path}#{mid}", f"parent_id {parent} does not exist")
+            continue
+        prole, crole = ids[parent].get("role"), msg.get("role")
+        if prole in ROLES and crole in ROLES and prole == crole:
+            add(findings, "E013", f"{path}#{mid}", f"roles do not alternate ({prole} -> {crole})")
+    if is_int(data.get("current_message_id")) and data["current_message_id"] not in ids:
+        add(findings, "E013", path, "current_message_id does not exist in the message tree")
+    refs = []
+    for msg in ids.values():
+        frags = msg.get("fragments")
+        if not isinstance(frags, list):
+            continue
+        for frag in frags:
+            if not isinstance(frag, dict) or frag.get("type") != "FILE":
+                continue
+            for entry in frag.get("files") or []:
+                if not isinstance(entry, dict):
+                    continue
+                export_path = entry.get("export_path")
+                if export_path is None:
+                    continue
+                if entry.get("is_image") is not True:
+                    add(findings, "E014", path, f"non-image file {entry.get('id')!r} has export_path")
+                if not is_str(export_path) or export_path not in names:
+                    add(findings, "E014", path, f"export_path {export_path!r} missing from archive")
+                elif not export_path.startswith(f"chat_sessions/{sid}_files/"):
+                    add(findings, "E014", path, f"export_path {export_path!r} outside session image dir")
+                refs.append(export_path)
+    return len(ids), refs
+
+
+def run(archive: Path, as_json: bool) -> int:
+    findings: list[Finding] = []
+    if not archive.is_file():
+        return emit_error(as_json, f"not a file: {archive}", "E000")
+    sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+    opened, err = safe_zip_entries(archive, findings)
+    if opened is None:
+        return emit_error(as_json, err or "invalid ZIP", "E001", archive, sha)
+    zf, infos = opened
+    names = {i.filename for i in infos}
+    if "manifest.json" not in names:
+        add(findings, "E003", "manifest.json", "manifest.json is missing")
+    else:
+        manifest, err = load_json_entry(zf, "manifest.json")
+        if err is not None:
+            add(findings, "E010", "manifest.json", f"invalid JSON: {err}")
+        elif not isinstance(manifest, dict):
+            add(findings, "E010", "manifest.json", "manifest is not an object")
+        elif manifest.get("export_format_version") != EXPORT_VERSION:
+            add(findings, "E010", "manifest.json", f"unsupported export_format_version {manifest.get('export_format_version')!r}")
+    sessions: dict[str, list[str]] = {}
+    counts: dict[str, int] = {}
+    for name in sorted(names):
+        match = SESSION_RE.match(name)
+        if not match:
+            continue
+        sid = match.group(1)
+        data, err = load_json_entry(zf, name)
+        if err is not None:
+            add(findings, "E012", name, f"invalid session JSON: {err}")
+            continue
+        count, refs = check_session(sid, data, zf, names, findings)
+        counts[sid] = count
+        sessions[sid] = refs
+    if "chat_session_index.json" not in names:
+        add(findings, "E012", "chat_session_index.json", "session index is missing")
+    else:
+        index, err = load_json_entry(zf, "chat_session_index.json")
+        if err is not None or not isinstance(index, list):
+            add(findings, "E012", "chat_session_index.json", f"invalid session index: {err or 'not an array'}")
+        else:
+            listed: dict[str, int] = {}
+            for entry in index:
+                if not isinstance(entry, dict) or not is_str(entry.get("id")):
+                    add(findings, "E012", "chat_session_index.json", "index entry without string id")
+                    continue
+                sid = entry["id"]
+                if sid in listed:
+                    add(findings, "E012", "chat_session_index.json", f"duplicate index id {sid!r}")
+                listed[sid] = entry.get("message_count") if is_int(entry.get("message_count")) else -1
+            if set(listed) != set(counts):
+                add(findings, "E012", "chat_session_index.json", f"index/session mismatch: index={sorted(listed)} sessions={sorted(counts)}")
+            for sid, expected in listed.items():
+                if sid in counts and expected != counts[sid]:
+                    add(findings, "E012", "chat_session_index.json", f"{sid}: message_count {expected} != actual {counts[sid]}")
+    referenced = {p for refs in sessions.values() for p in refs}
+    for name in sorted(names):
+        match = IMAGE_RE.match(name)
+        if match and name not in referenced:
+            add(findings, "W020", name, "image entry is not referenced by any FILE fragment")
+    findings.sort(key=lambda f: (f.code, f.path, f.detail))
+    errors = sum(1 for f in findings if f.severity == "error")
+    warnings = len(findings) - errors
+    report = {
+        "tool": TOOL,
+        "version": VERSION,
+        "archive": str(archive),
+        "sha256": sha,
+        "entries": len(infos),
+        "sessions": len(counts),
+        "messages": sum(counts.values()),
+        "ok": errors == 0,
+        "findings": [f.as_dict() for f in findings],
+        "summary": {"errors": errors, "warnings": warnings},
+    }
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(f"archive: {archive}")
+        print(f"sha256:  {sha}")
+        print(f"entries: {len(infos)}  sessions: {len(counts)}  messages: {sum(counts.values())}")
+        for f in findings:
+            print(f"[{f.code}] {f.path}: {f.detail}")
+        print(f"summary: {errors} error(s), {warnings} warning(s) -> {'OK' if errors == 0 else 'FAIL'}")
+    return 0 if errors == 0 else 1
+
+
+def emit_error(as_json: bool, message: str, code: str, archive: Path | None = None, sha: str | None = None) -> int:
+    if as_json:
+        payload = {"tool": TOOL, "version": VERSION, "ok": False,
+                   "error": {"code": code, "message": message}}
+        if archive is not None:
+            payload["archive"] = str(archive)
+        if sha is not None:
+            payload["sha256"] = sha
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"{TOOL}: {message}", file=sys.stderr)
+    return 2
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Offline preflight for chat-demo history ZIP archives (format v3).")
+    parser.add_argument("archive", help="path to deepseek_data-*.zip")
+    parser.add_argument("--json", action="store_true", help="machine-readable report on stdout")
+    args = parser.parse_args(argv)
+    return run(Path(args.archive), args.json)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

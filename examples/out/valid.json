@@ -1,0 +1,14 @@
+{
+  "tool": "chat-demo-archive-preflight",
+  "version": "1.0.0",
+  "sha256": "6e56afd4300798554f4d3e08ec6f9b67299692e57125dc3e2131d0fc0332d655",
+  "entries": 6,
+  "sessions": 2,
+  "messages": 3,
+  "ok": true,
+  "findings": [],
+  "summary": {
+    "errors": 0,
+    "warnings": 0
+  }
+}

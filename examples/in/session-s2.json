@@ -1,0 +1,24 @@
+{
+  "id": "s2",
+  "title": "with image",
+  "pinned": true,
+  "current_message_id": 1,
+  "inserted_at": "2026-11-11T02:35:00.000Z",
+  "updated_at": "2026-11-11T02:36:00.000Z",
+  "messages": [
+    {
+      "id": 1, "parent_id": null, "role": "USER", "status": "FINISHED",
+      "thinking_enabled": false, "search_enabled": false, "accumulated_token_usage": 0,
+      "inserted_at": "2026-11-11T02:35:00.000Z",
+      "fragments": [
+        {"type": "REQUEST", "content": "second image"},
+        {"type": "FILE", "files": [
+          {"id": "f2", "file_name": "b.png", "file_size": 24, "token_usage": null,
+           "inserted_at": "2026-11-11T02:35:00.000Z",
+           "export_path": "chat_sessions/s2_files/f2_b.png", "is_image": true,
+           "width": 2, "height": 2}
+        ]}
+      ]
+    }
+  ]
+}

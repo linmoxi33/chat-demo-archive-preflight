@@ -1,0 +1,30 @@
+{
+  "id": "s1",
+  "title": null,
+  "pinned": false,
+  "current_message_id": 2,
+  "inserted_at": "2026-11-11T02:33:23.270Z",
+  "updated_at": "2026-11-11T02:34:00.000Z",
+  "messages": [
+    {
+      "id": 1, "parent_id": null, "role": "USER", "status": "FINISHED",
+      "thinking_enabled": false, "search_enabled": false, "accumulated_token_usage": 0,
+      "inserted_at": "2026-11-11T02:33:23.270Z",
+      "fragments": [
+        {"type": "REQUEST", "content": "what is in the image?"},
+        {"type": "FILE", "files": [
+          {"id": "f1", "file_name": "a.png", "file_size": 24, "token_usage": null,
+           "inserted_at": "2026-11-11T02:33:23.270Z",
+           "export_path": "chat_sessions/s1_files/f1_a.png", "is_image": true,
+           "width": 1, "height": 1}
+        ]}
+      ]
+    },
+    {
+      "id": 2, "parent_id": 1, "role": "ASSISTANT", "status": "FINISHED",
+      "thinking_enabled": true, "search_enabled": false, "accumulated_token_usage": 12,
+      "inserted_at": "2026-11-11T02:33:30.000Z",
+      "fragments": [{"type": "RESPONSE", "content": "a tiny PNG"}]
+    }
+  ]
+}

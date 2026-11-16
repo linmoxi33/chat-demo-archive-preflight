@@ -1,0 +1,4 @@
+[
+  {"id": "s1", "title": null, "pinned": false, "message_count": 2, "inserted_at": "2026-11-11T02:33:23.270Z", "updated_at": "2026-11-11T02:34:00.000Z"},
+  {"id": "s2", "title": "with image", "pinned": true, "message_count": 1, "inserted_at": "2026-11-11T02:35:00.000Z", "updated_at": "2026-11-11T02:36:00.000Z"}
+]
