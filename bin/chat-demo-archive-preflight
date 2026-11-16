@@ -99,9 +99,14 @@ def safe_zip_entries(archive: Path, findings: list[Finding]):
             seen[nfc] = name
         if name.startswith("/") or "\\" in name or ".." in name.split("/"):
             add(findings, "E009", name, "unsafe path (absolute, backslash or '..' segment)")
-    bad = zf.testzip()
-    if bad is not None:
-        add(findings, "E013", bad, "CRC check failed")
+    if not any(i.flag_bits & 0x1 for i in infos):
+        try:
+            bad = zf.testzip()
+        except RuntimeError as exc:
+            bad = None
+            add(findings, "E005", "archive", f"entry cannot be read: {exc}")
+        if bad is not None:
+            add(findings, "E013", bad, "CRC check failed")
     return (zf, infos), None
 
 

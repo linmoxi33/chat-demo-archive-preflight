@@ -16,11 +16,11 @@ only after the user has already confirmed the destructive replacement.
 What the upstream docs actually say:
 
 - `manifest.json` must be the **first** entry, with `export_format_version: 3` —
-  <https://github.com/deepseek-ai/chat-demo/blob/main/src/services/chat/history/format.ts#L13>
+  <https://github.com/deepseek-ai/chat-demo/blob/main/src/services/chat/history/format.ts#L12-L15>
 - ZIP64, encryption, multi-volume and non-UTF-8 non-ASCII names are **not supported**; entry names are compared after NFC —
   <https://github.com/deepseek-ai/chat-demo/blob/main/src/services/chat/history/README.md#L61>
 - import validates the index/session one-to-one relation and the message tree, then replaces everything —
-  <https://github.com/deepseek-ai/chat-demo/blob/main/src/services/chat/history/README.md#L19-L24>
+  <https://github.com/deepseek-ai/chat-demo/blob/main/src/services/chat/history/README.md#L18-L24>
 
 Real open report on the same area (destructive import edge cases): <https://github.com/deepseek-ai/chat-demo/issues>
 
@@ -77,7 +77,7 @@ mismatch · `E013` CRC or message-tree violation · `E014` attachment reference 
 python3 -m unittest discover -s tests -v
 ```
 
-17 tests (16 behaviour tests that build real ZIPs and assert exit codes/JSON, 1 example-fidelity test).
+18 tests (17 behaviour tests that build real ZIPs and assert exit codes/JSON, 1 example-fidelity test).
 
 ## 本轮创新
 

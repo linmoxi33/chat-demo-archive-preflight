@@ -180,6 +180,22 @@ class TestBehaviour(Base):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("E009", self.codes(payload))
 
+    def test_encrypted_entry_is_e005_without_crash(self):
+        path = build(self.dir / "enc.zip", valid_entries())
+        data = bytearray(path.read_bytes())
+        pos = data.find(b"PK\x01\x02")
+        while pos != -1:
+            nlen = int.from_bytes(data[pos + 28:pos + 30], "little")
+            name = bytes(data[pos + 46:pos + 46 + nlen])
+            if name.endswith(b"f1_a.png"):
+                data[pos + 8] |= 1
+            pos = data.find(b"PK\x01\x02", pos + 4)
+        path.write_bytes(data)
+        proc = subprocess.run([sys.executable, str(BIN), str(path), "--json"],
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("E005", [f["code"] for f in json.loads(proc.stdout)["findings"]])
+
     def test_not_a_zip_is_exit_2(self):
         path = self.dir / "plain.zip"
         path.write_text("not a zip")
